@@ -1,4 +1,4 @@
-/* Печеньки для Lampa, v0.2.1. ES5, без внешних зависимостей. */
+/* Печеньки для Lampa, v0.2.2. ES5, без внешних зависимостей. */
 (function () {
     'use strict';
 
@@ -7,7 +7,7 @@
     if (!L || !L.Listener) return;
 
     var component = 'pechenki';
-    var version = '0.2.1';
+    var version = '0.2.2';
     var masterKey = 'pechenki_enabled';
     var features = [];
     var ready = false;
@@ -360,6 +360,8 @@
             ['Боевик', '28'], ['Мультфильм', '16'], ['Ужасы', '27'], ['Семейный', '10751']
         ];
         var durations = [['Любая длительность', 0], ['До 90 минут', 90], ['До 2 часов', 120], ['До 2,5 часов', 150]];
+        var ratings = [['Любой рейтинг', 0], ['Не ниже 5', 5], ['Не ниже 6', 6], ['Не ниже 6,5', 6.5],
+            ['Не ниже 7', 7], ['Не ниже 7,5', 7.5], ['Не ниже 8', 8], ['Не ниже 8,5', 8.5], ['Не ниже 9', 9]];
 
         function shuffle(items) {
             var result = items.slice();
@@ -381,8 +383,9 @@
             var revision = 0;
             var requestId = 0;
             var stage = 'config';
-            var genre = 0;
+            var selectedGenres = [];
             var duration = 2;
+            var minimumRating = 0;
             var cards = [];
             var previous = {};
             var order = [];
@@ -433,22 +436,62 @@
                 stage = 'config';
                 base('ПЕЧЕНЬКИ / КИНОСВИДАНИЕ', 'Вечер начинается с совпадения',
                     '12 фильмов, два мнения и один пульт. Оцените подборку по очереди — чужие ответы откроются только в финале.');
-                action('Жанр: ' + genres[genre][0], 'genre', function () { choose('genre'); });
+                action('Жанры: ' + genreNames(), 'genre', chooseGenres);
                 action('Длительность: ' + durations[duration][0], 'duration', function () { choose('duration'); });
+                action('Рейтинг TMDB: ' + ratings[minimumRating][0], 'rating', function () { choose('rating'); });
                 action('Подобрать фильмы', 'load', load, null, 'pechenki-date__button--accent');
                 body.append(window.$('<div class="pechenki-date__hint"></div>').text(
                     'Каждому — одно «Очень хочу!». Любое «Нет» исключает фильм. Назад — выход.'));
                 focus();
             }
+            function genreNames() {
+                var names = [];
+                for (var i = 1; i < genres.length; i++) {
+                    if (selectedGenres.indexOf(genres[i][1]) >= 0) names.push(genres[i][0]);
+                }
+                return names.length ? names.join(', ') : genres[0][0];
+            }
+            function chooseGenres() {
+                stage = 'choice';
+                base('НАСТРОИМ ВЕЧЕР', 'Какое кино хочется?',
+                    'Отметьте один или несколько жанров и нажмите «Готово». Подойдёт фильм хотя бы с одним выбранным жанром.');
+                var grid = window.$('<div class="pechenki-date__choices"></div>');
+                body.append(grid);
+                function update() {
+                    for (var i = 0; i < genres.length; i++) {
+                        var checked = i === 0 ? !selectedGenres.length : selectedGenres.indexOf(genres[i][1]) >= 0;
+                        grid.find('[data-date-action="choice-' + i + '"]')
+                            .text((checked ? '✓ ' : '') + genres[i][0])
+                            .toggleClass('pechenki-date__button--checked', checked)
+                            .attr('aria-pressed', checked ? 'true' : 'false');
+                    }
+                }
+                for (var i = 0; i < genres.length; i++) (function (index) {
+                    action(genres[index][0], 'choice-' + index, function () {
+                        if (index === 0) selectedGenres = [];
+                        else {
+                            var found = selectedGenres.indexOf(genres[index][1]);
+                            if (found >= 0) selectedGenres.splice(found, 1);
+                            else selectedGenres.push(genres[index][1]);
+                        }
+                        previous = {};
+                        update(); // Keep the focused button and scroll position while marking genres.
+                    }, grid);
+                }(i));
+                update();
+                action('Готово', 'genres-done', config, null, 'pechenki-date__button--accent');
+                focus();
+            }
             function choose(kind) {
                 stage = 'choice';
-                var list = kind === 'genre' ? genres : durations;
-                base('НАСТРОИМ ВЕЧЕР', kind === 'genre' ? 'Какое кино хочется?' : 'Сколько у вас времени?', 'Выберите один вариант.');
+                var list = kind === 'rating' ? ratings : durations;
+                base('НАСТРОИМ ВЕЧЕР', kind === 'rating' ? 'Какой рейтинг подойдёт?' : 'Сколько у вас времени?',
+                    kind === 'rating' ? 'Оценка TMDB по шкале от 0 до 10. Фильмы ниже выбранного порога не попадут в подборку.' : 'Выберите один вариант.');
                 var grid = window.$('<div class="pechenki-date__choices"></div>');
                 body.append(grid);
                 for (var i = 0; i < list.length; i++) (function (index) {
                     action(list[index][0], 'choice-' + index, function () {
-                        if (kind === 'genre') genre = index;
+                        if (kind === 'rating') minimumRating = index;
                         else duration = index;
                         previous = {};
                         config();
@@ -468,7 +511,7 @@
                 stage = 'loading';
                 cards = []; votes = [{}, {}]; special = [false, false]; matches = [];
                 base('СОБИРАЕМ ВАШУ ПОДБОРКУ', 'Ищем будущий общий фаворит',
-                    genres[genre][0] + ' · ' + durations[duration][0]);
+                    genreNames() + ' · ' + durations[duration][0] + ' · TMDB: ' + ratings[minimumRating][0]);
                 action('Отменить загрузку', 'cancel-load', function () { cancelRequest(); config(); });
                 focus();
                 var token = requestId;
@@ -479,8 +522,9 @@
                 var date = today.getFullYear() + '-' + ('0' + (today.getMonth() + 1)).slice(-2) + '-' + ('0' + today.getDate()).slice(-2);
                 var query = 'discover/movie?include_adult=false&sort_by=popularity.desc&vote_count.gte=100' +
                     '&primary_release_date.lte=' + date + '&with_runtime.gte=1';
-                if (genres[genre][1]) query += '&with_genres=' + genres[genre][1];
+                if (selectedGenres.length) query += '&with_genres=' + encodeURIComponent(selectedGenres.join('|'));
                 if (durations[duration][1]) query += '&with_runtime.lte=' + durations[duration][1];
+                if (ratings[minimumRating][1]) query += '&vote_average.gte=' + ratings[minimumRating][1];
                 query += '&language=' + encodeURIComponent(L.Storage.get('tmdb_lang', 'ru-RU') || 'ru-RU') +
                     '&api_key=' + encodeURIComponent(L.TMDB.key());
                 function valid() { return alive() && token === requestId; }
@@ -488,7 +532,7 @@
                     if (!valid()) return;
                     cards = shuffle(pool).slice(0, 12);
                     if (!cards.length) {
-                        message('Пока без кандидатов', 'По этим условиям новых фильмов не нашлось. Можно изменить жанр или длительность.', false);
+                        message('Пока без кандидатов', 'По этим условиям новых фильмов не нашлось. Можно изменить жанры, длительность или рейтинг.', false);
                         return;
                     }
                     for (var i = 0; i < cards.length; i++) previous[cards[i].id] = true;
@@ -509,6 +553,15 @@
                             var card = data.results[i];
                             if (!card || !card.id || !card.title || card.adult || seen[card.id] || previous[card.id] ||
                                 !card.release_date || card.release_date > date || card.media_type === 'tv') continue;
+                            var score = Number(card.vote_average);
+                            if (ratings[minimumRating][1] && (!isFinite(score) || score < ratings[minimumRating][1])) continue;
+                            var genreMatch = !selectedGenres.length;
+                            if (Array.isArray(card.genre_ids)) {
+                                for (var g = 0; g < card.genre_ids.length; g++) {
+                                    if (selectedGenres.indexOf(String(card.genre_ids[g])) >= 0) genreMatch = true;
+                                }
+                            }
+                            if (!genreMatch) continue;
                             seen[card.id] = true;
                             // Own copy: the game never changes catalog data or bookmarks.
                             var copy = {};
@@ -715,6 +768,7 @@
                 '.pechenki-date__intro{font-size:1.05em;line-height:1.5;color:#c6bfce;max-width:50em;margin-bottom:1.4em;}' +
                 '.pechenki-date__button{background:#302a3c;border:2px solid transparent;border-radius:.65em;padding:.8em 1.2em;margin:.55em 0;font-size:1.1em;line-height:1.3;}' +
                 '.pechenki-date__button--accent{background:#773b62;}.pechenki-date__button--special{color:#ffe3b4;}' +
+                '.pechenki-date__button--checked{background:#54344d;border-color:#c77eaa;}' +
                 '.pechenki-date__button.focus{background:#f7edf5;color:#22192b;border-color:#f7edf5;}' +
                 '.pechenki-date__hint{color:#afa5b9;line-height:1.4;margin-top:1.1em;font-size:.9em;}' +
                 '.pechenki-date__choices{display:flex;flex-wrap:wrap;}.pechenki-date__choices .pechenki-date__button{width:29%;margin-right:2%;box-sizing:border-box;}' +
