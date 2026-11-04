@@ -547,6 +547,7 @@
                 if (!alive()) return;
                 html.addClass('pechenki-date-screen');
                 scroll = new L.Scroll({mask: true, over: true});
+                scroll.minus();
                 network = new L.Reguest();
                 html.append(scroll.render());
                 config();
