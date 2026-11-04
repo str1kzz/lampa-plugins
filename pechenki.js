@@ -546,7 +546,7 @@
             this.create = function () {
                 if (!alive()) return;
                 html.addClass('pechenki-date-screen');
-                scroll = new L.Scroll({mask: true, over: true});
+                scroll = new L.Scroll({mask: true, over: true, nopadding: true});
                 scroll.minus();
                 network = new L.Reguest();
                 html.append(scroll.render());
@@ -597,7 +597,7 @@
             running = true;
             style = window.document.createElement('style');
             style.id = 'pechenki-date-style';
-            style.textContent = '.pechenki-date-screen{height:100%;background:#211b2a;}' +
+            style.textContent = '.pechenki-date-screen{height:100%;background:#211b2a;overflow:hidden;}' +
                 '.pechenki-date{padding:2em 3em 3em;max-width:72em;margin:auto;color:#f5f2fa;}' +
                 '.pechenki-date__kicker{color:#edacc9;font-size:.85em;letter-spacing:.16em;margin-bottom:1em;}' +
                 '.pechenki-date__heading{font-size:2.5em;line-height:1.14;font-weight:700;margin-bottom:.4em;}' +
