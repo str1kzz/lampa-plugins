@@ -289,7 +289,7 @@
     registerFeature({
         id: 'my_favorite',
         title: 'Мое любимое',
-        description: 'На главной везде «Ранетки». Карточки открывают настоящие фильмы.',
+        description: 'Для особого настроения.',
         defaultEnabled: false,
         enable: favorite.enable,
         disable: favorite.disable
