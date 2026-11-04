@@ -1,4 +1,4 @@
-/* Печеньки для Lampa, v0.1.1. ES5, без внешних зависимостей. */
+/* Печеньки для Lampa, v0.2.0. ES5, без внешних зависимостей. */
 (function () {
     'use strict';
 
@@ -7,7 +7,7 @@
     if (!L || !L.Listener) return;
 
     var component = 'pechenki';
-    var version = '0.1.1';
+    var version = '0.2.0';
     var masterKey = 'pechenki_enabled';
     var features = [];
     var ready = false;
@@ -17,6 +17,13 @@
 
     function boolean(value) {
         return value === true || value === 'true' || value === 1 || value === '1';
+    }
+
+    function storedBoolean(key, fallback) {
+        // Storage.get uses `value || fallback`: cached boolean false can become true.
+        // value() preserves the persisted string, including native toggle values.
+        return boolean(typeof L.Storage.value === 'function' ?
+            L.Storage.value(key, fallback ? 'true' : 'false') : L.Storage.get(key, fallback));
     }
 
     function escapeHtml(value) {
@@ -32,10 +39,10 @@
     }
 
     function enabled(id) {
-        if (!boolean(L.Storage.get(masterKey, true))) return false;
+        if (!storedBoolean(masterKey, true)) return false;
         if (typeof id === 'undefined') return true;
         var feature = find(id);
-        return !!feature && boolean(L.Storage.get(feature.key, feature.defaultEnabled));
+        return !!feature && storedBoolean(feature.key, feature.defaultEnabled);
     }
 
     function applyFeature(feature) {
@@ -53,7 +60,7 @@
                 try { feature.disable(); } catch (cleanupError) {
                     console.error('[Печеньки] cleanup ' + feature.id, cleanupError);
                 }
-                L.Storage.set(feature.key, false);
+                L.Storage.set(feature.key, 'false');
             }
             if (L.Noty) L.Noty.show('Печеньки: ошибка функции «' + feature.title + '».');
         }
@@ -100,7 +107,7 @@
     function setEnabled(id, value) {
         var feature = typeof id === 'undefined' ? null : find(id);
         if (typeof id !== 'undefined' && !feature) throw new Error('Печеньки: неизвестная функция ' + id);
-        L.Storage.set(feature ? feature.key : masterKey, boolean(value));
+        L.Storage.set(feature ? feature.key : masterKey, boolean(value) ? 'true' : 'false');
         sync();
     }
 
@@ -228,6 +235,407 @@
         return {enable: enable, disable: disable};
     }
 
+    function createDateFeature() {
+        var running = false;
+        var registered = false;
+        var button = null;
+        var style = null;
+        var screens = [];
+        var name = 'pechenki_date';
+        var genres = [
+            ['Любой жанр', ''], ['Комедия', '35'], ['Приключения', '12'],
+            ['Детектив', '9648'], ['Триллер', '53'], ['Фантастика', '878'],
+            ['Фэнтези', '14'], ['Мелодрама', '10749'], ['Драма', '18'],
+            ['Боевик', '28'], ['Мультфильм', '16'], ['Ужасы', '27'], ['Семейный', '10751']
+        ];
+        var durations = [['Любая длительность', 0], ['До 90 минут', 90], ['До 2 часов', 120], ['До 2,5 часов', 150]];
+
+        function shuffle(items) {
+            var result = items.slice();
+            for (var i = result.length - 1; i > 0; i--) {
+                var j = Math.floor(Math.random() * (i + 1));
+                var tmp = result[i]; result[i] = result[j]; result[j] = tmp;
+            }
+            return result;
+        }
+
+        function DateScreen() {
+            var self = this;
+            var html = window.$('<div></div>');
+            var scroll = null;
+            var network = null;
+            var body = null;
+            var last = null;
+            var dead = false;
+            var revision = 0;
+            var requestId = 0;
+            var stage = 'config';
+            var genre = 0;
+            var duration = 2;
+            var cards = [];
+            var previous = {};
+            var order = [];
+            var votes = [{}, {}];
+            var special = [false, false];
+            var player = 0;
+            var position = 0;
+            var matches = [];
+            screens.push(self);
+
+            function alive() { return running && !dead; }
+            function current() {
+                var active = L.Activity.active();
+                return active && active.activity === self.activity;
+            }
+            function cancelRequest() {
+                requestId++;
+                if (network) network.clear();
+            }
+            function base(kicker, title, text) {
+                revision++;
+                last = null;
+                body = window.$('<div class="pechenki-date"></div>');
+                body.append(window.$('<div class="pechenki-date__kicker"></div>').text(kicker));
+                body.append(window.$('<div class="pechenki-date__heading"></div>').text(title));
+                if (text) body.append(window.$('<div class="pechenki-date__intro"></div>').text(text));
+                scroll.clear(); scroll.reset(); scroll.append(body);
+            }
+            function action(label, id, call, target, extra) {
+                var token = revision;
+                var item = window.$('<div class="selector pechenki-date__button"></div>');
+                item.text(label).attr('data-date-action', id);
+                if (extra) item.addClass(extra);
+                item.on('hover:focus', function () {
+                    last = item[0];
+                    scroll.update(item, true);
+                });
+                item.on('hover:enter', function () {
+                    if (alive() && current() && token === revision) call();
+                });
+                (target || body).append(item);
+                return item;
+            }
+            function focus() {
+                if (alive() && current()) self.start();
+            }
+            function config() {
+                stage = 'config';
+                base('ПЕЧЕНЬКИ / КИНОСВИДАНИЕ', 'Вечер начинается с совпадения',
+                    '12 фильмов, два мнения и один пульт. Оцените подборку по очереди — чужие ответы откроются только в финале.');
+                action('Жанр: ' + genres[genre][0], 'genre', function () { choose('genre'); });
+                action('Длительность: ' + durations[duration][0], 'duration', function () { choose('duration'); });
+                action('Подобрать фильмы', 'load', load, null, 'pechenki-date__button--accent');
+                body.append(window.$('<div class="pechenki-date__hint"></div>').text(
+                    'Каждому — одно «Очень хочу!». Любое «Нет» исключает фильм. Назад — выход.'));
+                focus();
+            }
+            function choose(kind) {
+                stage = 'choice';
+                var list = kind === 'genre' ? genres : durations;
+                base('НАСТРОИМ ВЕЧЕР', kind === 'genre' ? 'Какое кино хочется?' : 'Сколько у вас времени?', 'Выберите один вариант.');
+                var grid = window.$('<div class="pechenki-date__choices"></div>');
+                body.append(grid);
+                for (var i = 0; i < list.length; i++) (function (index) {
+                    action(list[index][0], 'choice-' + index, function () {
+                        if (kind === 'genre') genre = index;
+                        else duration = index;
+                        previous = {};
+                        config();
+                    }, grid);
+                }(i));
+                focus();
+            }
+            function message(title, text, retry) {
+                stage = 'message';
+                base('КИНОСВИДАНИЕ', title, text);
+                if (retry) action('Попробовать ещё', 'retry', load, null, 'pechenki-date__button--accent');
+                action('Изменить условия', 'config', config);
+                focus();
+            }
+            function load() {
+                cancelRequest();
+                stage = 'loading';
+                cards = []; votes = [{}, {}]; special = [false, false]; matches = [];
+                base('СОБИРАЕМ ВАШУ ПОДБОРКУ', 'Ищем будущий общий фаворит',
+                    genres[genre][0] + ' · ' + durations[duration][0]);
+                action('Отменить загрузку', 'cancel-load', function () { cancelRequest(); config(); });
+                focus();
+                var token = requestId;
+                var pool = [];
+                var seen = {};
+                var pages = [1];
+                var today = new Date();
+                var date = today.getFullYear() + '-' + ('0' + (today.getMonth() + 1)).slice(-2) + '-' + ('0' + today.getDate()).slice(-2);
+                var query = 'discover/movie?include_adult=false&sort_by=popularity.desc&vote_count.gte=100' +
+                    '&primary_release_date.lte=' + date + '&with_runtime.gte=1';
+                if (genres[genre][1]) query += '&with_genres=' + genres[genre][1];
+                if (durations[duration][1]) query += '&with_runtime.lte=' + durations[duration][1];
+                query += '&language=' + encodeURIComponent(L.Storage.get('tmdb_lang', 'ru-RU') || 'ru-RU') +
+                    '&api_key=' + encodeURIComponent(L.TMDB.key());
+                function valid() { return alive() && token === requestId; }
+                function finish() {
+                    if (!valid()) return;
+                    cards = shuffle(pool).slice(0, 12);
+                    if (!cards.length) {
+                        message('Пока без кандидатов', 'По этим условиям новых фильмов не нашлось. Можно изменить жанр или длительность.', false);
+                        return;
+                    }
+                    for (var i = 0; i < cards.length; i++) previous[cards[i].id] = true;
+                    player = 0; position = 0;
+                    order = shuffle(cards);
+                    handoff(false);
+                }
+                function fetchPage(page) {
+                    if (!valid()) return;
+                    network.timeout(12000);
+                    network.silent(L.TMDB.api(query + '&page=' + page), function (data) {
+                        if (!valid()) return;
+                        if (!data || !Array.isArray(data.results)) {
+                            message('Не удалось получить подборку', 'Каталог ответил некорректно. Попробуйте ещё раз.', true);
+                            return;
+                        }
+                        for (var i = 0; i < data.results.length; i++) {
+                            var card = data.results[i];
+                            if (!card || !card.id || !card.title || card.adult || seen[card.id] || previous[card.id] ||
+                                !card.release_date || card.release_date > date || card.media_type === 'tv') continue;
+                            seen[card.id] = true;
+                            // Own copy: the game never changes catalog data or bookmarks.
+                            var copy = {};
+                            for (var key in card) if (Object.prototype.hasOwnProperty.call(card, key)) copy[key] = card[key];
+                            copy.source = 'tmdb'; copy.media_type = 'movie';
+                            pool.push(copy);
+                        }
+                        var total = Math.max(1, Math.min(Number(data.total_pages) || 1, 10));
+                        var remaining = [];
+                        for (var p = 2; p <= total; p++) if (pages.indexOf(p) < 0) remaining.push(p);
+                        // At most three pages; a second page makes repeat evenings less predictable.
+                        if (remaining.length && pages.length < 3 && (pages.length < 2 || pool.length < 12)) {
+                            var next = shuffle(remaining)[0]; pages.push(next); fetchPage(next);
+                        }
+                        else finish();
+                    }, function () {
+                        if (valid()) message('Каталог сейчас недоступен', 'Проверьте подключение и доступность каталога в Lampa. Ваши условия сохранены.', true);
+                    });
+                }
+                fetchPage(1);
+            }
+            function handoff(second) {
+                stage = 'handoff';
+                base(second ? 'ПОЛОВИНА ПУТИ ПРОЙДЕНА' : 'ВАША ПОДБОРКА ГОТОВА',
+                    second ? 'Передайте пульт второму зрителю' : 'Первый зритель, ваш выход!',
+                    (second ? 'Ответы первого зрителя скрыты. Те же фильмы будут в другом порядке. ' : '') +
+                    'Фильмов в раунде: ' + cards.length + '. Пока один голосует, другой может отвернуться — так выбор останется сюрпризом.');
+                action(second ? 'Начать второй раунд' : 'Начать первый раунд', 'begin', voteScreen, null, 'pechenki-date__button--accent');
+                if (!second) action('Изменить условия', 'config', config);
+                focus();
+            }
+            function movieView(card, target) {
+                var row = window.$('<div class="pechenki-date__movie"></div>');
+                var poster = window.$('<div class="pechenki-date__poster"><span>Киносвидание</span></div>');
+                if (typeof card.poster_path === 'string' && /^\/[a-zA-Z0-9_.\/-]+$/.test(card.poster_path)) {
+                    var img = window.$('<img alt="">');
+                    img.on('error', function () { img.remove(); });
+                    img.attr('src', L.TMDB.image('t/p/w300' + card.poster_path));
+                    poster.append(img);
+                }
+                var info = window.$('<div class="pechenki-date__info"></div>');
+                info.append(window.$('<div class="pechenki-date__title"></div>').text(card.title));
+                var rating = Number(card.vote_average);
+                info.append(window.$('<div class="pechenki-date__meta"></div>').text(
+                    String(card.release_date || '').slice(0, 4) + (rating > 0 ? ' · TMDB ' + rating.toFixed(1) : '')));
+                info.append(window.$('<div class="pechenki-date__overview"></div>').text(
+                    String(card.overview || 'Описание пока не добавлено.').slice(0, 650)));
+                row.append(poster).append(info);
+                (target || body).append(row);
+            }
+            function voteScreen() {
+                stage = 'vote';
+                var card = order[position];
+                base('ЗРИТЕЛЬ ' + (player + 1) + ' / ФИЛЬМ ' + (position + 1) + ' ИЗ ' + cards.length,
+                    'Посмотрели бы сегодня?', 'Выбирайте для себя. Сравним ответы после двух раундов.');
+                movieView(card);
+                var actions = window.$('<div class="pechenki-date__votes"></div>'); body.append(actions);
+                function vote(value) {
+                    if (value === 3 && special[player]) return;
+                    votes[player][card.id] = value;
+                    if (value === 3) special[player] = true;
+                    position++;
+                    if (position < order.length) voteScreen();
+                    else if (player === 0) {
+                        player = 1; position = 0; order = shuffle(cards);
+                        // Guarantee a different order even when the shuffle happens to repeat it.
+                        var same = true;
+                        for (var i = 0; i < order.length; i++) if (order[i].id !== cardsOrder[i]) same = false;
+                        if (same && order.length > 1) order.push(order.shift());
+                        handoff(true);
+                    }
+                    else results();
+                }
+                if (player === 0 && position === 0) {
+                    cardsOrder = [];
+                    for (var i = 0; i < order.length; i++) cardsOrder.push(order[i].id);
+                }
+                action('Хочу', 'vote-2', function () { vote(2); }, actions, 'pechenki-date__button--accent');
+                action('Можно', 'vote-1', function () { vote(1); }, actions);
+                action('Нет', 'vote-0', function () { vote(0); }, actions);
+                if (!special[player]) action('Очень хочу!', 'vote-3', function () { vote(3); }, actions, 'pechenki-date__button--special');
+                body.append(window.$('<div class="pechenki-date__hint"></div>').text(
+                    special[player] ? '«Очень хочу!» уже использовано. Назад — приостановить или закончить игру.' :
+                        '«Очень хочу!» можно выбрать один раз за раунд. Назад — приостановить или закончить игру.'));
+                focus();
+            }
+            var cardsOrder = [];
+            function openMovie(card) {
+                L.Activity.push({component: 'full', method: 'movie', source: 'tmdb', id: card.id, card: card});
+            }
+            function results() {
+                stage = 'results';
+                matches = [];
+                for (var i = 0; i < cards.length; i++) {
+                    var c = cards[i];
+                    var a = votes[0][c.id], b = votes[1][c.id];
+                    if (a > 0 && b > 0) matches.push({card: c, rank: Math.min(a, b), sum: a + b, a: a, b: b});
+                }
+                matches.sort(function (a, b) { return b.rank - a.rank || b.sum - a.sum; });
+                base('ОТВЕТЫ РАСКРЫТЫ', matches.length ? 'Есть совпадение!' : 'Переговоры зашли в тупик',
+                    matches.length ? 'Сначала — фильмы, которые оба хотят посмотреть. Затем — варианты, на которые оба согласны.' :
+                        'Сегодня вкусы разошлись. Ни один фильм с ответом «Нет» не попадёт в общий выбор. Попробуем ещё?');
+                if (matches.length) {
+                    action('Выбрать случайный из совпадений', 'random', function () {
+                        winner(matches[Math.floor(Math.random() * matches.length)]);
+                    }, null, 'pechenki-date__button--accent');
+                    for (var j = 0; j < matches.length; j++) (function (match, index) {
+                        var subtitle = match.rank >= 2 ? 'Оба хотят посмотреть' : 'Оба согласны';
+                        if (match.a === 3) subtitle += ' · Зритель 1: очень хочу!';
+                        if (match.b === 3) subtitle += ' · Зритель 2: очень хочу!';
+                        action((index + 1) + '. ' + match.card.title + ' — ' + subtitle, 'match-' + match.card.id,
+                            function () { winner(match); });
+                    }(matches[j], j));
+                }
+                action('Новая подборка с теми же условиями', 'again', load);
+                action('Изменить условия', 'config', config);
+                focus();
+            }
+            function winner(match) {
+                stage = 'winner';
+                base('ВАШ ОБЩИЙ ВЫБОР', 'Сегодня смотрим…', 'Совпадение найдено. Пора готовить попкорн!');
+                movieView(match.card);
+                action('Открыть фильм', 'open-movie', function () { openMovie(match.card); }, null, 'pechenki-date__button--accent');
+                action('Все совпадения', 'results', results);
+                focus();
+            }
+            function back() {
+                if (stage === 'loading') { cancelRequest(); config(); }
+                else if (stage === 'choice' || stage === 'message') config();
+                else if (stage === 'winner') results();
+                else if (stage === 'vote' || stage === 'handoff') {
+                    var resumeStage = stage;
+                    base('ПАУЗА', 'Продолжим киносвидание?', 'Результаты текущей игры сохранятся, пока вы остаётесь на этом экране.');
+                    action('Продолжить', 'resume', function () { if (resumeStage === 'vote') voteScreen(); else handoff(player === 1); });
+                    action('Закончить игру', 'exit', function () { self.dispose(); L.Activity.backward(); });
+                    focus();
+                    stage = 'pause';
+                }
+                else if (stage === 'pause') actionResume();
+                else { self.dispose(); L.Activity.backward(); }
+            }
+            function actionResume() {
+                var resume = body.find('[data-date-action="resume"]');
+                if (resume.length) resume.trigger('hover:enter');
+            }
+            this.create = function () {
+                if (!alive()) return;
+                html.addClass('pechenki-date-screen');
+                scroll = new L.Scroll({mask: true, over: true});
+                network = new L.Reguest();
+                html.append(scroll.render());
+                config();
+                self.activity.loader(false);
+            };
+            this.start = function () {
+                if (!alive() || !scroll) { L.Activity.backward(); return; }
+                L.Controller.add('content', {
+                    link: self,
+                    toggle: function () {
+                        L.Controller.collectionSet(scroll.render());
+                        L.Controller.collectionFocus(last || false, scroll.render());
+                    },
+                    up: function () { if (window.Navigator.canmove('up')) window.Navigator.move('up'); else L.Controller.toggle('head'); },
+                    down: function () { window.Navigator.move('down'); },
+                    left: function () { if (window.Navigator.canmove('left')) window.Navigator.move('left'); else L.Controller.toggle('menu'); },
+                    right: function () { window.Navigator.move('right'); },
+                    back: back
+                });
+                L.Controller.toggle('content');
+            };
+            this.render = function () { return html; };
+            this.pause = function () {};
+            this.stop = function () {};
+            this.dispose = function () {
+                if (dead) return;
+                dead = true; revision++; cancelRequest();
+                cards = []; order = []; votes = [{}, {}]; matches = []; previous = {}; cardsOrder = [];
+                if (scroll) scroll.destroy();
+                scroll = null; network = null; body = null; last = null;
+                html.empty().removeClass('pechenki-date-screen');
+                var index = screens.indexOf(self);
+                if (index >= 0) screens.splice(index, 1);
+            };
+            this.destroy = function () { self.dispose(); html.remove(); };
+        }
+
+        function launch() {
+            if (running) L.Activity.push({component: name, title: 'Киносвидание'});
+        }
+        function enable() {
+            if (running) return;
+            if (!window.$ || !L.Component || !L.Scroll || !L.Reguest || !L.TMDB || !window.Navigator) {
+                throw new Error('Киносвидание: недоступен API Lampa.');
+            }
+            if (!registered) { L.Component.add(name, DateScreen); registered = true; }
+            running = true;
+            style = window.document.createElement('style');
+            style.id = 'pechenki-date-style';
+            style.textContent = '.pechenki-date-screen{height:100%;background:#211b2a;}' +
+                '.pechenki-date{padding:2em 3em 3em;max-width:72em;margin:auto;color:#f5f2fa;}' +
+                '.pechenki-date__kicker{color:#edacc9;font-size:.85em;letter-spacing:.16em;margin-bottom:1em;}' +
+                '.pechenki-date__heading{font-size:2.5em;line-height:1.14;font-weight:700;margin-bottom:.4em;}' +
+                '.pechenki-date__intro{font-size:1.05em;line-height:1.5;color:#c6bfce;max-width:50em;margin-bottom:1.4em;}' +
+                '.pechenki-date__button{background:#302a3c;border:2px solid transparent;border-radius:.65em;padding:.8em 1.2em;margin:.55em 0;font-size:1.1em;line-height:1.3;}' +
+                '.pechenki-date__button--accent{background:#773b62;}.pechenki-date__button--special{color:#ffe3b4;}' +
+                '.pechenki-date__button.focus{background:#f7edf5;color:#22192b;border-color:#f7edf5;}' +
+                '.pechenki-date__hint{color:#afa5b9;line-height:1.4;margin-top:1.1em;font-size:.9em;}' +
+                '.pechenki-date__choices{display:flex;flex-wrap:wrap;}.pechenki-date__choices .pechenki-date__button{width:29%;margin-right:2%;box-sizing:border-box;}' +
+                '.pechenki-date__movie{display:flex;align-items:center;margin:1em 0 1.3em;}' +
+                '.pechenki-date__poster{position:relative;flex-shrink:0;width:10em;height:15em;background:#302a3c;border-radius:.6em;overflow:hidden;display:flex;align-items:center;justify-content:center;color:#b4a7be;}' +
+                '.pechenki-date__poster img{position:absolute;width:100%;height:100%;top:0;left:0;object-fit:contain;background:#302a3c;}' +
+                '.pechenki-date__info{margin-left:2em;min-width:0;}.pechenki-date__title{font-size:1.8em;line-height:1.15;font-weight:700;}' +
+                '.pechenki-date__meta{color:#edacc9;margin:.7em 0;}.pechenki-date__overview{font-size:1em;line-height:1.5;color:#d0c8d8;}' +
+                '.pechenki-date__votes{display:flex;flex-wrap:wrap;}.pechenki-date__votes .pechenki-date__button{margin-right:.65em;}' +
+                '@media(max-width:700px){.pechenki-date{padding:1.5em;}.pechenki-date__heading{font-size:2em;}.pechenki-date__poster{width:7em;height:10.5em;}.pechenki-date__overview{max-height:9em;overflow:auto;}.pechenki-date__choices .pechenki-date__button{width:47%;}}';
+            window.document.head.appendChild(style);
+            if (L.Menu && typeof L.Menu.addButton === 'function') {
+                button = L.Menu.addButton(icon, 'Киносвидание', launch).attr('data-action', name);
+            }
+            else {
+                button = window.$('<li class="menu__item selector" data-action="pechenki_date"><div class="menu__ico">' + icon +
+                    '</div><div class="menu__text">Киносвидание</div></li>');
+                button.on('hover:enter', launch);
+                window.$('.menu .menu__list').eq(0).append(button);
+            }
+        }
+        function disable() {
+            running = false;
+            var active = L.Activity && L.Activity.active();
+            while (screens.length) screens[0].dispose();
+            if (active && active.component === name) L.Activity.backward();
+            if (button) { button.off('hover:enter'); button.remove(); button = null; }
+            if (style && style.parentNode) style.parentNode.removeChild(style);
+            style = null;
+        }
+        return {enable: enable, disable: disable};
+    }
+
     function init() {
         if (ready) return;
         if (!L.SettingsApi || !L.Settings || !L.Storage || !L.Controller) {
@@ -293,6 +701,16 @@
         defaultEnabled: false,
         enable: favorite.enable,
         disable: favorite.disable
+    });
+
+    var dateFeature = createDateFeature();
+    registerFeature({
+        id: 'movie_date',
+        title: 'Киносвидание',
+        description: 'Выбирайте фильм вдвоём. После включения откройте «Киносвидание» в боковом меню.',
+        defaultEnabled: false,
+        enable: dateFeature.enable,
+        disable: dateFeature.disable
     });
 
     if (window.appready) init();
