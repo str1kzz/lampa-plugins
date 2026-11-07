@@ -1,4 +1,4 @@
-/* Печеньки для Lampa, v0.4.0. ES5, без внешних зависимостей. */
+/* Печеньки для Lampa, v0.4.1. ES5, без внешних зависимостей. */
 (function () {
     'use strict';
 
@@ -7,7 +7,7 @@
     if (!L || !L.Listener) return;
 
     var component = 'pechenki';
-    var version = '0.4.0';
+    var version = '0.4.1';
     var masterKey = 'pechenki_enabled';
     var features = [];
     var ready = false;
@@ -807,33 +807,12 @@
         var name = 'pechenki_anime_mvp';
         var title = 'Аниме mvp';
         var catalogue = 'https://shikimori.io';
-        var serverKey = 'pechenki_anime_lampac';
+        var direct = 'https://api.anilibria.app/api/v1';
         var pageSize = 24;
         var menu = null;
         var style = null;
         var screen = null;
         var registered = false;
-
-        function serverOrigin(input) {
-            return /^https?:\/\/(?:[a-z0-9.-]+|\[[a-f0-9:]+\])(?::\d{1,5})?\/?$/i.test(input) ?
-                input.replace(/\/$/, '') : '';
-        }
-
-        function serverAddress() {
-            var stored = L.Storage.get(serverKey, '');
-            var location = window.location;
-            return serverOrigin(stored) || (location.port === '9118' ?
-                serverOrigin(location.protocol + '//' + location.host) : '');
-        }
-
-        function providerUrl(input, server, video) {
-            if (typeof input !== 'string' || !server) return '';
-            if (/^\/lite\//.test(input)) input = server + input;
-            var prefix = server + '/lite/kodik' + (video ? '/video' : '');
-            if (input.indexOf(prefix + '?') !== 0) return '';
-            if (video || /[?&]rjson=true(?:&|$)/.test(input)) return input;
-            return input.replace(/([?&])rjson=[^&#]*(&|$)/, '$1').replace(/[?&]$/, '') + '&rjson=true';
-        }
 
         function titleOf(entry) { return entry.russian || entry.name || 'Без названия'; }
         function yearOf(entry) { return String(entry.aired_on || '').slice(0, 4); }
@@ -857,8 +836,9 @@
             var resultPage = 1;
             var hasMore = false;
             var card;
-            var frames = [];
-            var onlineServer = '';
+            var episodes = [];
+            var episodePage = 0;
+            var nativeSearchOpen = false;
 
             function current() {
                 var active = L.Activity.active();
@@ -960,18 +940,6 @@
                 message('Каталог не ответил', 'Вернись к поиску и попробуй ещё раз.', showResults);
             }
 
-            function configureServer(back) {
-                edit('Адрес Lampac, например http://192.168.1.10:9118', serverAddress(), function (input) {
-                    var address = serverOrigin(input);
-                    if (!address) {
-                        if (input) L.Noty.show('Введи полный адрес Lampac с http:// или https://.');
-                        return;
-                    }
-                    L.Storage.set(serverKey, address);
-                    back();
-                });
-            }
-
             function showResults() {
                 heading('Аниме и дунхуа', 'Поиск по каталогу Шикимори', null);
                 var controls = $('<div class="pechenki-anime__controls"></div>').appendTo(body);
@@ -985,7 +953,6 @@
                         search(1);
                     });
                 }, controls);
-                action('Сервер онлайн', 'server', function () { configureServer(showResults); }, controls);
                 if (query && !results.length) body.append($('<p></p>').text('В этой выдаче нет тайтлов.'));
                 results.forEach(function (entry) {
                     var item = action(titleOf(entry), 'title-' + entry.id, function () { openCard(entry); });
@@ -1005,7 +972,8 @@
                 request(catalogue + '/api/animes/' + entry.id, function (data) {
                     if (!data || String(data.id) !== String(entry.id)) { fail(); return; }
                     card = data;
-                    frames = [];
+                    episodes = [];
+                    episodePage = 0;
                     showCard();
                 }, fail);
                 function fail() {
@@ -1028,6 +996,7 @@
                 }).filter(Boolean).join(', ')));
                 var controls = $('<div class="pechenki-anime__controls"></div>').appendTo(info);
                 action('Смотреть онлайн', 'watch', startOnline, controls);
+                action('Открыть в Lampa', 'lampa', openLampa, controls);
                 action('К результатам', 'catalogue', showResults, controls);
                 var description = String(card.description || '').replace(/\[\/?[a-z]+(?:=[^\]]+)?\]/gi, '')
                     .replace(/\[\[([^\]]+)\]\]/g, '$1');
@@ -1035,150 +1004,153 @@
                 self.start();
             }
 
-            function startOnline() {
-                onlineServer = serverAddress();
-                if (!onlineServer) { configureServer(startOnline); return; }
-                frames = [];
-                var url = onlineServer + '/lite/kodik?rjson=true&title=' + encodeURIComponent(titleOf(card)) +
-                    '&original_title=' + encodeURIComponent(card.name || titleOf(card));
-                online(url, showCard, 0);
-            }
-
-            function online(url, back, depth, replace) {
-                var safe = providerUrl(url, onlineServer, false);
-                if (!safe || depth > 4) { unavailable(); return; }
-                message('Загружаем серии…', titleOf(card) + ' · Lampac', back);
-                request(safe, function (data) {
-                    if (!data || !Array.isArray(data.data) || !data.data.length) { unavailable(); return; }
-                    var frame = {response: data, page: 0};
-                    if (data.type === 'similar' || data.type === 'season') {
-                        var preferred = matchingLink(data);
-                        if (preferred) {
-                            online(preferred, back, depth + 1, replace);
-                            return;
-                        }
-                    }
-                    if (replace) frames.pop();
-                    frames.push(frame);
-                    showOnline();
-                }, unavailable);
-                function unavailable() {
-                    message('Онлайн пока недоступен',
-                        'Lampac не вернул список для этого тайтла. Проверь, что сервер включён и доступен.', back);
-                }
-            }
-
-            function matchingLink(data) {
-                if (data.type === 'season') return data.data.length === 1 ? data.data[0].url : '';
-                var year = Number(yearOf(card));
-                var aliases = [card.name, card.russian].concat(card.english || [], card.japanese || [])
+            function aliases() {
+                return [card.russian, card.name].concat(card.english || [], card.japanese || [], card.synonyms || [])
                     .filter(Boolean).map(comparable);
-                var exact = data.data.filter(function (row) {
-                    return (!year || Number(row.year) === year) && String(row.title || '').split(' / ').some(function (value) {
-                        return aliases.indexOf(comparable(value)) !== -1;
-                    });
-                });
-                return exact.length === 1 ? exact[0].url : '';
             }
 
-            function backOnline() {
-                frames.pop();
-                if (frames.length) showOnline();
-                else showCard();
+            function startOnline() {
+                if (episodes.length) { showEpisodes(); return; }
+                message('Ищем серии…', titleOf(card) + ' · AniLiberty', showCard);
+                var names = aliases();
+                var year = Number(yearOf(card));
+                var original = card.name;
+                function findRelease(query, fallback) {
+                    request(direct + '/app/search/releases?query=' + encodeURIComponent(query), function (data) {
+                        var exact = Array.isArray(data) ? data.filter(function (row) {
+                            if (!row || !row.name || !/^\d+$/.test(row.id)) return false;
+                            if (row.shikimori && row.shikimori.id) return Number(row.shikimori.id) === Number(card.id);
+                            return (!year || Number(row.year) === year) &&
+                                [row.name.main, row.name.english, row.name.alternative].some(function (label) {
+                                    return names.indexOf(comparable(label)) !== -1;
+                                });
+                        }) : [];
+                        if (exact.length === 1) loadRelease(exact[0].id);
+                        else if (fallback && original && comparable(original) !== comparable(query)) findRelease(original, false);
+                        else unavailable('У AniLiberty нет подходящего релиза для этого тайтла.');
+                    }, function () { unavailable('AniLiberty не ответил.'); });
+                }
+                findRelease(titleOf(card), true);
             }
 
-            function showOnline() {
-                var frame = frames[frames.length - 1];
-                var data = frame.response;
-                if (data.type === 'episode') { showEpisodes(frame); return; }
-                heading(titleOf(card), data.type === 'season' ? 'Выбери сезон' : 'Результаты онлайн · Kodik', backOnline);
-                data.data.forEach(function (row, index) {
-                    action(row.title || row.name || 'Смотреть', 'online-' + index, function () {
-                        if (row.method === 'link') online(row.url, showOnline, 0);
-                        else play(row);
-                    });
-                });
+            function loadRelease(id) {
+                request(direct + '/anime/releases/' + id, function (data) {
+                    if (!data || !Array.isArray(data.episodes) || (data.shikimori && data.shikimori.id &&
+                        Number(data.shikimori.id) !== Number(card.id))) {
+                        unavailable('Не удалось сопоставить онлайн-релиз с карточкой.');
+                        return;
+                    }
+                    episodes = data.episodes.filter(function (row) {
+                        return row && Number(row.ordinal) > 0 && Object.keys(qualityOf(row)).length;
+                    }).sort(function (a, b) { return Number(a.ordinal) - Number(b.ordinal); });
+                    if (episodes.length) showEpisodes();
+                    else unavailable('У AniLiberty сейчас нет доступных видео для этого тайтла.');
+                }, function () { unavailable('Не удалось получить серии от AniLiberty.'); });
+            }
+
+            function unavailable(text) {
+                heading('Прямой источник недоступен', text + ' Можно выбрать «Онлайн» или «Торренты» в Lampa.', showCard);
+                action('Открыть в Lampa', 'lampa', openLampa);
+                action('Назад', 'back', goBack);
                 self.start();
             }
 
-            function showEpisodes(frame, target) {
-                var data = frame.response;
-                var episodes = data.data.filter(function (row) { return Number(row.e) > 0; })
-                    .sort(function (a, b) { return Number(a.e) - Number(b.e); });
-                var first = frame.page * pageSize;
+            function openLampa() {
+                var label = titleOf(card);
+                var names = aliases();
+                var year = yearOf(card);
+                var method = card.kind === 'movie' ? 'movie' : 'tv';
+                function nativeSearch() {
+                    showCard();
+                    if (!L.Search || !L.Search.open) {
+                        L.Noty.show('Найди «' + label + '» в обычном поиске Lampa.');
+                        return;
+                    }
+                    nativeSearchOpen = true;
+                    L.Search.open({input: label.replace(/[<>&]/g, ' '), onBack: function () {
+                        nativeSearchOpen = false;
+                        if (current()) self.start();
+                    }});
+                }
+                if (!L.TMDB || !L.TMDB.api || !L.TMDB.key) { nativeSearch(); return; }
+                message('Открываем в Lampa…', label, showCard);
+                var preferred = Array.isArray(card.english) && card.english[0];
+                function lookup(query, fallback) {
+                    request(L.TMDB.api('search/' + method + '?query=' + encodeURIComponent(query) +
+                        '&language=' + encodeURIComponent(L.Storage.get('tmdb_lang', 'ru-RU')) +
+                        '&api_key=' + encodeURIComponent(L.TMDB.key())), function (data) {
+                        var matches = data && Array.isArray(data.results) ? data.results.filter(function (item) {
+                            return item && /^\d+$/.test(item.id) && !item.adult &&
+                                (!year || String(item.first_air_date || item.release_date || '').slice(0, 4) === year) &&
+                                [item.name, item.title, item.original_name, item.original_title].some(function (value) {
+                                    return names.indexOf(comparable(value)) !== -1;
+                                });
+                        }) : [];
+                        if (matches.length === 1) {
+                            showCard();
+                            L.Activity.push({component: 'full', method: method, source: 'tmdb',
+                                id: matches[0].id, card: matches[0]});
+                        } else if (fallback && preferred && comparable(preferred) !== comparable(query)) lookup(preferred, false);
+                        else nativeSearch();
+                    }, nativeSearch);
+                }
+                lookup(label, true);
+            }
+
+            function showEpisodes(target) {
+                var first = episodePage * pageSize;
                 var visible = episodes.slice(first, first + pageSize);
-                var voices = Array.isArray(data.voice) ? data.voice : [];
-                var voice = voices.filter(function (entry) { return entry.active; })[0];
-                var summary = visible.length ?
-                    'Серии ' + visible[0].e + '–' + visible[visible.length - 1].e + ' · доступно ' + episodes.length : 'Серии не найдены';
-                heading(titleOf(card), summary + ' · Kodik', backOnline);
+                var summary = 'Серии ' + visible[0].ordinal + '–' + visible[visible.length - 1].ordinal +
+                    ' · доступно ' + episodes.length;
+                heading(titleOf(card), summary + ' · AniLiberty', showCard);
                 var controls = $('<div class="pechenki-anime__controls"></div>').appendTo(body);
-                action('Назад', 'online-back', backOnline, controls);
-                if (voices.length > 1) action('Озвучка · ' + (voice ? voice.name : 'выбрать'), 'voices', function () {
-                    heading(titleOf(card), 'Выбери озвучку', showOnline);
-                    voices.forEach(function (entry, index) {
-                        var item = action(entry.name || 'Озвучка', 'voice-' + index, function () {
-                            if (entry.active) showOnline();
-                            else online(entry.url, showOnline, 0, true);
-                        });
-                        if (entry.active) focus = item[0];
-                    });
-                    self.start();
-                }, controls);
-                if (episodes.length) action('К номеру серии', 'jump', function () {
+                action('Назад', 'online-back', showCard, controls);
+                action('Открыть в Lampa', 'lampa', openLampa, controls);
+                action('К номеру серии', 'jump', function () {
                     edit('Номер серии', '', function (value) {
                         if (!value) return;
-                        for (var i = 0; /^\d+$/.test(value) && i < episodes.length; i++) {
-                            if (Number(episodes[i].e) !== Number(value)) continue;
-                            frame.page = Math.floor(i / pageSize);
-                            showEpisodes(frame, Number(value));
+                        for (var i = 0; /^\d+(\.\d+)?$/.test(value) && i < episodes.length; i++) {
+                            if (Number(episodes[i].ordinal) !== Number(value)) continue;
+                            episodePage = Math.floor(i / pageSize);
+                            showEpisodes(Number(value));
                             return;
                         }
-                        L.Noty.show('В этой озвучке такой серии нет.');
+                        L.Noty.show('У AniLiberty такой серии нет. Можно открыть тайтл в Lampa.');
                     });
                 }, controls);
                 var grid = $('<div class="pechenki-anime__grid"></div>').appendTo(body);
                 visible.forEach(function (row) {
-                    var item = action(String(row.e), 'episode-' + row.e, function () { play(row); }, grid)
-                        .attr('aria-label', 'Смотреть серию ' + row.e);
-                    if (Number(row.e) === target) focus = item[0];
+                    var number = Number(row.ordinal);
+                    var item = action(String(number), 'episode-' + number, function () { play(row); }, grid)
+                        .attr('aria-label', 'Смотреть серию ' + number);
+                    if (number === target) focus = item[0];
                 });
                 var pages = $('<div class="pechenki-anime__controls"></div>').appendTo(body);
-                if (first > 0) action('‹  Предыдущие', 'prev', function () { frame.page--; showEpisodes(frame); }, pages);
+                if (first > 0) action('‹  Предыдущие', 'prev', function () { episodePage--; showEpisodes(); }, pages);
                 if (first + visible.length < episodes.length) action('Следующие  ›', 'next', function () {
-                    frame.page++;
-                    showEpisodes(frame);
+                    episodePage++;
+                    showEpisodes();
                 }, pages);
                 self.start();
             }
 
+            function qualityOf(row) {
+                var quality = {};
+                ['1080', '720', '480'].forEach(function (height) {
+                    var url = row['hls_' + height];
+                    if (typeof url === 'string' && /^https:\/\/[^\s]+$/i.test(url)) quality[height + 'p'] = url;
+                });
+                return quality;
+            }
+
             function play(row) {
-                function streamUrl(value) {
-                    var url = typeof value === 'string' ? value.split(' or ')[0] : '';
-                    return /^https?:\/\/[^\s]+$/i.test(url) ? url : '';
-                }
-                function launch(data) {
-                    var url = data && streamUrl(data.url);
-                    if (!url) { fail(); return; }
-                    var stream = {url: url, title: titleOf(card) + (row.e ? ' · серия ' + row.e : ''),
-                        season: Number(row.s) || undefined, episode: Number(row.e) || undefined,
-                        isonline: true, pechenkiAnime: true};
-                    var quality = data.quality || {};
-                    stream.quality = {};
-                    Object.keys(quality).forEach(function (label) {
-                        var link = streamUrl(quality[label]);
-                        if (/^\d{3,4}p?$/.test(label) && link) stream.quality[label] = link;
-                    });
-                    if (data.hls_manifest_timeout) stream.hls_manifest_timeout = data.hls_manifest_timeout;
-                    if (data.segments) stream.segments = data.segments;
-                    L.Player.play(stream);
-                }
-                function fail() { L.Noty.show('Источник не отдал видео. Попробуй другую серию или озвучку.'); }
-                if (row.method === 'play') { launch(row); return; }
-                var url = providerUrl(row.url, onlineServer, true);
-                if (row.method !== 'call' || !url) { fail(); return; }
-                L.Noty.show('Открываем видео…');
-                request(url, launch, fail);
+                var quality = qualityOf(row);
+                var number = Number(row.ordinal);
+                L.Player.play({
+                    url: quality['720p'] || quality['1080p'] || quality['480p'],
+                    quality: quality, title: titleOf(card) + ' · серия ' + number, episode: number,
+                    isonline: true, pechenkiAnime: true
+                });
             }
 
             this.create = function () {
@@ -1213,6 +1185,7 @@
                 var pendingInput = keyboard;
                 keyboard = null;
                 cancel();
+                if (nativeSearchOpen && L.Search && L.Search.close) L.Search.close();
                 if (scroll) scroll.destroy();
                 scroll = null;
                 if (pendingInput) pendingInput.listener.send('back');
@@ -1223,7 +1196,7 @@
         registerFeature({
             id: 'anime_mvp',
             title: title,
-            description: 'Поиск аниме и дунхуа, карточки и серии онлайн через Lampac.',
+            description: 'Поиск аниме и дунхуа, серии AniLiberty и переход в источники Lampa.',
             defaultEnabled: false,
             enable: function () {
                 if (menu) return;
